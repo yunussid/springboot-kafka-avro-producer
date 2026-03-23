@@ -1,0 +1,27 @@
+# Server Configuration
+server:
+  port: 9393
+
+# Kafka Configuration
+# NOTE: Serializer config is in KafkaAvroProducerConfig.java (recommended approach)
+spring:
+  kafka:
+    bootstrap-servers: localhost:9092
+
+# Schema Registry Configuration
+schema:
+  registry:
+    url: http://localhost:8081
+
+# Application Topics
+app:
+  kafka:
+    topics:
+      employee: employee-avro-topic
+
+# Logging
+logging:
+  level:
+    org.apache.kafka: INFO
+    io.confluent: INFO
+    com.kafkaPrac.kafka: DEBUG

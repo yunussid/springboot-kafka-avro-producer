@@ -1,0 +1,45 @@
+{
+  "type": "record",
+  "name": "Employee",
+  "namespace": "com.kafkaPrac.kafka.avro",
+  "doc": "Avro schema for Employee - Version 1",
+  "fields": [
+    {
+      "name": "id",
+      "type": "int",
+      "doc": "Unique employee identifier"
+    },
+    {
+      "name": "name",
+      "type": "string",
+      "doc": "Employee full name"
+    },
+    {
+      "name": "email",
+      "type": "string",
+      "doc": "Employee email address"
+    },
+    {
+      "name": "department",
+      "type": "string",
+      "doc": "Department name"
+    },
+    {
+      "name": "salary",
+      "type": "double",
+      "doc": "Employee salary"
+    },
+    {
+      "name": "phoneNumber",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Optional phone number - demonstrates nullable field for backward compatibility"
+    },
+    {
+      "name": "address",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Optional address - can be added later without breaking consumers"
+    }
+  ]
+}

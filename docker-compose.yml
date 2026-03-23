@@ -1,0 +1,93 @@
+# Docker Compose for Kafka with Schema Registry (KRaft Mode - No Zookeeper!)
+# Required for Avro-based producer and consumer
+#
+# Services:
+#   1. Kafka Broker (Port 9092) - Message storage (KRaft mode - built-in consensus)
+#   2. Schema Registry (Port 8081) - Schema storage for Avro
+#
+# Note: Using KRaft mode (Kafka 3.x+) - Zookeeper is NOT required!
+#
+# Usage:
+#   docker-compose up -d     # Start all services
+#   docker-compose ps        # Check status
+#   docker-compose down      # Stop all services
+
+version: '3.8'
+
+services:
+  # Kafka Broker with KRaft mode (No Zookeeper needed!)
+  # KRaft = Kafka Raft - Built-in consensus protocol replacing Zookeeper
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    ports:
+      - "9092:9092"
+      - "9101:9101"
+    environment:
+      # KRaft Settings
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+
+      # Listener Configuration
+      KAFKA_LISTENERS: PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+
+      # Cluster Settings
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+
+      # KRaft Cluster ID (generate with: kafka-storage random-uuid)
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+
+      # Log Settings
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Schema Registry - Schema storage and validation for Avro
+  # This is REQUIRED for Avro serialization/deserialization
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.5.0
+    container_name: schema-registry
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:29092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+      SCHEMA_REGISTRY_DEBUG: "true"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/subjects"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+# Useful commands:
+# ----------------
+# Start:            docker-compose up -d
+# Stop:             docker-compose down
+# View logs:        docker-compose logs -f
+# Schema Registry:  docker-compose logs -f schema-registry
+#
+# Test Schema Registry:
+#   curl http://localhost:8081/subjects
+#   curl http://localhost:8081/schemas/types
+#
+# Create topic manually:
+#   docker exec kafka kafka-topics --create --topic employee-avro-topic --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092
+#
+# List topics:
+#   docker exec kafka kafka-topics --list --bootstrap-server localhost:9092
