@@ -116,3 +116,4 @@ kafka-data/
 # Avro generated classes (optional - some prefer to commit these)
 # ─────────────────────────────────────────────────────────────────────────────
 # target/generated-sources/avro/
+write_readme.py
