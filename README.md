@@ -1,8 +1,8 @@
-# Spring Boot Kafka Avro — Producer
+# Spring Boot Kafka Avro -- Producer
 
 A beginner-friendly Spring Boot application that **sends Employee data to Apache Kafka** using **Avro** serialization and **Schema Registry**.
 
-> **New to Kafka?** Read the ["What is Kafka?" section](#-what-is-kafka-the-60-second-version) below before touching the code.
+> **New to Kafka?** Read the "What is Kafka?" section below before touching the code.
 
 ---
 
@@ -32,7 +32,7 @@ Think of Kafka as an **indestructible mailbox**. The producer drops a letter in,
 | **Broker** | A single Kafka server that stores messages |
 | **Topic** | A named mailbox / channel (like `employee-avro-topic`) |
 | **Partition** | A topic is split into partitions for parallel processing. 3 partitions = 3 threads can read simultaneously |
-| **Offset** | A sequential ID for each message in a partition — the "bookmark" of what has been read |
+| **Offset** | A sequential ID for each message in a partition -- the "bookmark" of what has been read |
 | **Avro** | A compact binary format for data (much smaller & faster than JSON) |
 | **Schema Registry** | A server that stores the "shape" of your data (the schema). Producers and consumers agree on the schema so data never gets corrupted |
 | **KRaft** | Kafka 3.x+ runs its own coordination (no more Zookeeper needed) |
@@ -74,82 +74,237 @@ Think of Kafka as an **indestructible mailbox**. The producer drops a letter in,
 
 ---
 
-## Project Structure — Read the Code in This Order
+## Code Reading Guide -- Follow This Path
 
-```
-springboot-kafka-avro-producer/
-  |
-  |-- docker-compose.yml          1. START HERE: spins up Kafka + Schema Registry
-  |
-  |-- src/main/avro/
-  |     +-- employee.avsc          2. The Avro schema — defines Employee fields
-  |
-  |-- src/main/java/com/kafkaPrac/kafka/
-  |     |-- avro/
-  |     |     +-- Employee.java    3. AUTO-GENERATED from employee.avsc (do NOT edit)
-  |     |
-  |     |-- dto/
-  |     |     +-- EmployeeRequest.java   4. Simple POJO — what the REST API receives
-  |     |
-  |     |-- config/
-  |     |     |-- KafkaTopicConfig.java          5. Creates the topic at startup
-  |     |     +-- KafkaAvroProducerConfig.java   6. Configures HOW to serialize & send
-  |     |
-  |     |-- service/
-  |     |     +-- KafkaAvroMessagePublisher.java 7. The actual "send to Kafka" logic
-  |     |
-  |     |-- controller/
-  |     |     +-- EmployeeController.java        8. REST endpoints that trigger sends
-  |     |
-  |     +-- KafkaAvroProducerApplication.java    9. Spring Boot main class
-  |
-  |-- src/main/resources/
-  |     +-- application.yaml      10. Ports, broker address, topic name
-  |
-  +-- pom.xml                     11. Dependencies (Spring Kafka, Avro, Confluent)
-```
+### Step 1: Infrastructure -- What do you need running?
 
-### Recommended reading order explained
+**File:** `docker-compose.yml` (project root)
 
-| Step | File | Why read it? |
-|------|------|-------------|
-| 1 | `docker-compose.yml` | Understand what infrastructure you need: a Kafka broker (port 9092) and a Schema Registry (port 8081) |
-| 2 | `employee.avsc` | This is the "contract" — the shape of an Employee message. Fields like `id`, `name`, `email`, `salary`. Optional fields (`phoneNumber`, `address`) show how schemas can evolve without breaking consumers |
-| 3 | `Employee.java` (avro/) | Auto-generated from the `.avsc`. You never write this. It gives you a type-safe builder: `Employee.newBuilder().setName("John").build()` |
-| 4 | `EmployeeRequest.java` | A plain Java class for the REST API. The controller receives this, then converts it to the Avro `Employee` |
-| 5 | `KafkaTopicConfig.java` | Creates `employee-avro-topic` with 3 partitions and 1 replica when the app starts |
-| 6 | `KafkaAvroProducerConfig.java` | **THE CORE CONFIG.** Sets up: (a) broker address, (b) `KafkaAvroSerializer` for values, (c) Schema Registry URL, (d) auto-register schemas. This is where the magic happens |
-| 7 | `KafkaAvroMessagePublisher.java` | Calls `kafkaTemplate.send(topic, key, employee)`. Logs success (topic, partition, offset) or failure |
-| 8 | `EmployeeController.java` | Three REST endpoints: send employee, send to specific partition, send with only required fields |
-| 9 | `application.yaml` | Connects everything: broker at `localhost:9092`, schema registry at `localhost:8081`, topic name `employee-avro-topic` |
+Open this first. It spins up two Docker containers:
+
+| Container | Port | Purpose |
+|-----------|------|---------|
+| `kafka` | 9092 | The Kafka broker -- stores messages |
+| `schema-registry` | 8081 | Stores Avro schemas so producer & consumer agree on data shape |
+
+> Without these two running, nothing works.
 
 ---
 
-## What Happens When You Send a Message (Step by Step)
+### Step 2: The Data Contract -- What does an Employee look like?
+
+**File:** `src/main/avro/employee.avsc`
+
+This is the **single source of truth** for the Employee data shape. Both the producer and consumer must have this identical file.
 
 ```
-1. You call:  POST http://localhost:9393/avro-producer/employee  { "name": "John", ... }
+Fields defined here:
+  id          : int       (required)
+  name        : string    (required)
+  email       : string    (required)
+  department  : string    (required)
+  salary      : double    (required)
+  phoneNumber : string    (OPTIONAL -- can be null)
+  address     : string    (OPTIONAL -- can be null)
+```
 
-2. EmployeeController receives the JSON as EmployeeRequest
+> The optional fields with `"default": null` are what enable **schema evolution** -- you can add new optional fields later without breaking existing consumers.
 
-3. Controller converts it to Avro Employee using:
-     Employee.newBuilder().setName("John").setEmail("john@co.com") ... .build()
+---
 
-4. Controller calls publisher.sendEmployee(employee)
+### Step 3: The Generated Class -- DO NOT EDIT
 
-5. KafkaAvroMessagePublisher calls kafkaTemplate.send("employee-avro-topic", "1", employee)
+**File:** `src/main/java/com/kafkaPrac/kafka/avro/Employee.java`
 
-6. KafkaAvroSerializer (configured in KafkaAvroProducerConfig):
-     a. Checks Schema Registry — "does this schema exist?"
-     b. If not, registers it automatically (AUTO_REGISTER_SCHEMAS = true)
-     c. Converts the Employee object to compact Avro BINARY bytes
+This Java class is **auto-generated** from `employee.avsc` by the Avro Maven Plugin during `mvn compile`. You never write or edit this file. It gives you:
+- A type-safe builder: `Employee.newBuilder().setName("John").build()`
+- Getters: `employee.getName()`, `employee.getSalary()`
+- Built-in Avro serialization/deserialization
 
-7. The binary bytes are sent to Kafka broker on topic "employee-avro-topic"
+---
 
-8. Kafka stores the message in one of the 3 partitions and assigns it an offset
+### Step 4: The REST DTO -- What does the API accept?
 
-9. The CompletableFuture callback logs:
-     "Employee sent successfully - Topic: employee-avro-topic, Partition: 1, Offset: 42"
+**File:** `src/main/java/com/kafkaPrac/kafka/dto/EmployeeRequest.java`
+
+A plain Java POJO. When you POST JSON to the API, Spring deserializes it into this class. It has the same fields as the Avro schema but is a simple Java class (no Avro dependency).
+
+> **Why not use the Avro `Employee` directly in the controller?** Separation of concerns. The REST layer should not depend on your serialization format. `EmployeeRequest` is the API contract; `Employee` is the Kafka contract.
+
+---
+
+### Step 5: Topic Creation -- Where do messages go?
+
+**File:** `src/main/java/com/kafkaPrac/kafka/config/KafkaTopicConfig.java`
+
+When the app starts, Spring Boot auto-creates the topic:
+
+```
+Topic name : employee-avro-topic    (from application.yaml)
+Partitions : 3                      (3 parallel lanes for messages)
+Replicas   : 1                      (1 copy -- fine for local dev)
+```
+
+This file also creates a `KafkaAdmin` bean that connects to the broker to manage topics.
+
+---
+
+### Step 6: Producer Configuration -- THE CORE
+
+**File:** `src/main/java/com/kafkaPrac/kafka/config/KafkaAvroProducerConfig.java`
+
+**This is the most important file in the project.** It configures HOW messages are sent:
+
+```
+producerConfigs()           -- settings map:
+  BOOTSTRAP_SERVERS         --> localhost:9092 (where is Kafka?)
+  KEY_SERIALIZER            --> StringSerializer (keys are strings like "1", "2")
+  VALUE_SERIALIZER          --> KafkaAvroSerializer (values are Avro binary)
+  SCHEMA_REGISTRY_URL       --> http://localhost:8081 (where are schemas stored?)
+  AUTO_REGISTER_SCHEMAS     --> true (register new schemas automatically)
+  ACKS                      --> "all" (wait for all replicas to confirm)
+  RETRIES                   --> 3 (retry up to 3 times on failure)
+          |
+          v
+producerFactory()           -- creates Kafka producer instances using above config
+          |
+          v
+kafkaTemplate()             -- the high-level API you use in your service code
+```
+
+**Read this file line by line.** Every property is commented.
+
+---
+
+### Step 7: The Publisher Service -- Sending messages
+
+**File:** `src/main/java/com/kafkaPrac/kafka/service/KafkaAvroMessagePublisher.java`
+
+This service has two methods:
+
+```
+sendEmployee(employee)
+  --> kafkaTemplate.send(topic, key, employee)
+  --> CompletableFuture callback logs success or failure
+
+sendEmployeeToPartition(employee, partition)
+  --> kafkaTemplate.send(topic, partition, key, employee)
+  --> sends to a SPECIFIC partition instead of letting Kafka decide
+```
+
+The `@Value("${app.kafka.topics.employee}")` pulls the topic name from `application.yaml`.
+
+---
+
+### Step 8: The REST Controller -- Entry point for requests
+
+**File:** `src/main/java/com/kafkaPrac/kafka/controller/EmployeeController.java`
+
+Three endpoints:
+
+```
+POST /avro-producer/employee
+  --> Converts EmployeeRequest to Avro Employee
+  --> Calls publisher.sendEmployee(employee)
+  --> Kafka decides which partition
+
+POST /avro-producer/employee/partition/{partition}
+  --> Same, but YOU choose the partition (0, 1, or 2)
+  --> Calls publisher.sendEmployeeToPartition(employee, partition)
+
+POST /avro-producer/employee/minimal
+  --> Only sets required fields (id, name, email, department, salary)
+  --> phoneNumber and address are null
+  --> Demonstrates schema evolution -- consumer still works fine
+```
+
+---
+
+### Step 9: Application Config -- Connecting the dots
+
+**File:** `src/main/resources/application.yaml`
+
+```yaml
+server.port: 9393                           # This app runs on port 9393
+
+spring.kafka.bootstrap-servers: localhost:9092   # Where Kafka is running
+schema.registry.url: http://localhost:8081       # Where Schema Registry is running
+
+app.kafka.topics.employee: employee-avro-topic   # Topic name used everywhere
+```
+
+Every `@Value(...)` annotation in the Java code pulls from this file.
+
+---
+
+### Step 10: Dependencies
+
+**File:** `pom.xml` (project root)
+
+Key dependencies:
+- `spring-boot-starter-web` -- REST API
+- `spring-kafka` -- Kafka integration
+- `avro` -- Avro data format
+- `kafka-avro-serializer` -- converts Java objects to Avro binary
+- `kafka-schema-registry-client` -- talks to Schema Registry
+- `avro-maven-plugin` -- generates `Employee.java` from `employee.avsc`
+
+---
+
+## The Complete Runtime Flow -- File by File
+
+```
+YOU send:  curl POST localhost:9393/avro-producer/employee  {"name":"John",...}
+               |
+               v
+  EmployeeController.java                    [controller/]
+    |  receives JSON as EmployeeRequest
+    |  converts to Avro Employee using Employee.newBuilder()...build()
+    |  calls publisher.sendEmployee(employee)
+               |
+               v
+  KafkaAvroMessagePublisher.java             [service/]
+    |  calls kafkaTemplate.send("employee-avro-topic", "1", employee)
+    |  kafkaTemplate was created by...
+               |
+               v
+  KafkaAvroProducerConfig.java               [config/]
+    |  kafkaTemplate --> ProducerFactory --> producerConfigs
+    |  VALUE_SERIALIZER = KafkaAvroSerializer
+    |  SCHEMA_REGISTRY_URL = http://localhost:8081
+               |
+               v
+  KafkaAvroSerializer (Confluent library, not your code)
+    |  Step A: checks Schema Registry -- "does this schema exist?"
+    |  Step B: if new, registers it (AUTO_REGISTER_SCHEMAS = true)
+    |  Step C: serializes Employee into compact Avro binary bytes
+               |
+               v
+  Kafka Broker (localhost:9092)
+    |  stores message in employee-avro-topic, Partition 1, Offset 42
+               |
+               v
+  Consumer app (port 9494) picks it up later
+```
+
+---
+
+## What Happens at App Startup (Before Any Request)
+
+```
+Spring Boot starts
+       |
+       v
+  KafkaAvroProducerConfig.java          creates KafkaTemplate bean
+       |
+       v
+  KafkaTopicConfig.java                 creates "employee-avro-topic" (3 partitions)
+       |
+       v
+  application.yaml                      provides all the config values via @Value
+       |
+       v
+  App is ready on port 9393             waiting for POST requests
 ```
 
 ---
@@ -256,4 +411,4 @@ docker-compose down
 
 ## Related Project
 
-- **Consumer:** [springboot-kafka-avro-consumer](https://github.com/yunussid/springboot-kafka-avro-consumer) — reads Employee messages from the same topic
+- **Consumer:** [springboot-kafka-avro-consumer](https://github.com/yunussid/springboot-kafka-avro-consumer) -- reads Employee messages from the same topic
