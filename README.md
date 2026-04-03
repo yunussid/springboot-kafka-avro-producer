@@ -91,6 +91,114 @@ Open this first. It spins up two Docker containers:
 
 ---
 
+### Understanding the 3 Ports (Why Are They All Different?)
+
+When you look at `application.yaml`, you see 3 different ports:
+
+```yaml
+server:
+  port: 9393                              # Port 1: YOUR app
+
+spring:
+  kafka:
+    bootstrap-servers: localhost:9092      # Port 2: Kafka broker
+
+schema:
+  registry:
+    url: http://localhost:8081             # Port 3: Schema Registry
+```
+
+These are **3 completely separate servers** doing 3 completely different jobs:
+
+```
++-------------------------------------------------------------------+
+|                        YOUR MACHINE                                |
+|                                                                    |
+|   +---------------------+                                         |
+|   | YOUR SPRING BOOT APP|   This is YOUR Java application.        |
+|   | Port 9393            |   It exposes REST APIs like             |
+|   | (application server) |   POST /avro-producer/employee          |
+|   |                      |   You wrote this code.                  |
+|   +----------+-----------+                                         |
+|              |                                                     |
+|              | "send this Employee to Kafka"                       |
+|              v                                                     |
+|   +---------------------+                                         |
+|   | KAFKA BROKER         |   This is the MESSAGE STORAGE.          |
+|   | Port 9092            |   It receives messages, stores them     |
+|   | (bootstrap-servers)  |   on disk in topics/partitions, and     |
+|   |                      |   serves them to consumers.             |
+|   |                      |   You did NOT write this -- it runs     |
+|   |                      |   inside Docker.                        |
+|   +----------+-----------+                                         |
+|              |                                                     |
+|              | "what schema should I use for this data?"            |
+|              v                                                     |
+|   +---------------------+                                         |
+|   | SCHEMA REGISTRY      |   This is the SCHEMA STORAGE.           |
+|   | Port 8081            |   It stores Avro schemas so both        |
+|   | (schema.registry.url)|   producer and consumer agree on        |
+|   |                      |   the data format.                      |
+|   |                      |   You did NOT write this -- it runs     |
+|   |                      |   inside Docker.                        |
+|   +---------------------+                                         |
++-------------------------------------------------------------------+
+```
+
+#### What is "Bootstrap Server"?
+
+The name sounds confusing, but it simply means **"the first Kafka broker your app connects to."**
+
+When your app starts, it needs to find the Kafka cluster. It connects to the `bootstrap-servers` address first. That broker then tells your app about all the other brokers in the cluster (if there are multiple). Think of it as the **front door** to Kafka.
+
+```
+Your App --- connects to ---> localhost:9092 (bootstrap server)
+                                    |
+                                    v
+                              Kafka says: "Here are all the brokers
+                              in the cluster: broker-1, broker-2, broker-3"
+                                    |
+                                    v
+                              Your App now knows the full cluster
+```
+
+In local development you have just 1 broker, so `localhost:9092` is both the bootstrap server and the only broker.
+
+In production, you would list multiple brokers for high availability:
+```yaml
+spring:
+  kafka:
+    bootstrap-servers: broker1:9092,broker2:9092,broker3:9092
+```
+
+#### Why 3 Separate Servers?
+
+| Server | Port | Who built it? | Job | Analogy |
+|--------|------|--------------|-----|---------|
+| **Your App** | 9393 | You | Receives HTTP requests, converts to Avro, sends to Kafka | The **writer** who writes letters |
+| **Kafka Broker** | 9092 | Apache (runs in Docker) | Stores messages in topics, delivers to consumers | The **post office** that stores and delivers letters |
+| **Schema Registry** | 8081 | Confluent (runs in Docker) | Stores the "shape" of data so everyone agrees on the format | The **form template** office -- ensures everyone fills out the same form |
+
+They are separate because they have **separate responsibilities**. You could restart your app (9393) without affecting Kafka (9092) or Schema Registry (8081). You could scale Kafka to 10 brokers without touching your app. That is the power of decoupling.
+
+#### Where Each Port is Configured in Code
+
+| Port | Defined in | Used by |
+|------|-----------|---------|
+| `9393` | `application.yaml` -> `server.port` | Spring Boot embedded Tomcat (your REST API) |
+| `9092` | `application.yaml` -> `spring.kafka.bootstrap-servers` | `KafkaAvroProducerConfig.java` reads it via `@Value("${spring.kafka.bootstrap-servers}")` and passes it to `ProducerConfig.BOOTSTRAP_SERVERS_CONFIG` |
+| `8081` | `application.yaml` -> `schema.registry.url` | `KafkaAvroProducerConfig.java` reads it via `@Value("${schema.registry.url}")` and passes it to `KafkaAvroSerializerConfig.SCHEMA_REGISTRY_URL_CONFIG` |
+
+#### What Happens If One Is Down?
+
+| Scenario | What breaks? |
+|----------|-------------|
+| Your App (9393) is down | No REST API -- you cannot send curl requests. Kafka and Schema Registry are fine |
+| Kafka (9092) is down | Your app starts but `.send()` fails with connection errors. Messages are lost |
+| Schema Registry (8081) is down | Your app starts but Avro serialization fails -- it cannot register or fetch schemas |
+
+---
+
 ### Step 2: The Data Contract -- What does an Employee look like?
 
 **File:** `src/main/avro/employee.avsc`
