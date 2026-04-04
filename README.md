@@ -91,6 +91,143 @@ Open this first. It spins up two Docker containers:
 
 ---
 
+### What is KRaft? (And Why There is No Zookeeper)
+
+If you Google "Kafka setup", older tutorials will show you **3 containers**: Zookeeper, Kafka, and Schema Registry. But our `docker-compose.yml` has only **2 containers** -- there is no Zookeeper. This is because our setup uses **KRaft mode**.
+
+#### The Old Way -- Zookeeper (Before Kafka 3.x)
+
+Kafka is a distributed system. When you have multiple brokers, someone needs to answer:
+- Which broker is the **leader** for each partition?
+- Which brokers are **alive**?
+- Where is the **metadata** (topic list, partition assignments, configs)?
+
+Historically, Kafka depended on a **separate system called Apache Zookeeper** to handle all of this:
+
+```
+THE OLD WAY (Kafka 2.x and earlier):
+
+  +-------------+         +-------------+         +-------------------+
+  | Zookeeper   | <-----> | Kafka       | <-----> | Schema Registry   |
+  | Port 2181   |         | Broker      |         | Port 8081         |
+  | (metadata   |         | Port 9092   |         |                   |
+  |  manager)   |         |             |         |                   |
+  +-------------+         +-------------+         +-------------------+
+
+  3 separate systems to install, configure, monitor, and keep alive.
+  Zookeeper had its own configs, its own logs, its own failure modes.
+  Operational nightmare.
+```
+
+**Problems with Zookeeper:**
+- You had to manage TWO distributed systems instead of one
+- Zookeeper had its own scaling limits (~200,000 partitions max)
+- Recovery after a broker crash took **minutes** (Zookeeper election was slow)
+- Configuration was complex -- two separate config files, two separate clusters
+
+#### The New Way -- KRaft (Kafka 3.x+, default in Kafka 4.0)
+
+**KRaft** stands for **K**afka **Raft**. Kafka now handles its own metadata internally using the [Raft consensus protocol](https://raft.github.io/). No external dependency needed.
+
+```
+THE NEW WAY (KRaft mode -- what this project uses):
+
+  +---------------------------+         +-------------------+
+  | Kafka (KRaft mode)        | <-----> | Schema Registry   |
+  | Port 9092                 |         | Port 8081         |
+  |                           |         |                   |
+  | Built-in:                 |         |                   |
+  |   - Broker (stores msgs)  |         |                   |
+  |   - Controller (metadata)  |         |                   |
+  +---------------------------+         +-------------------+
+
+  2 systems instead of 3. Kafka manages itself.
+```
+
+#### Why KRaft is Better
+
+| | Zookeeper (old) | KRaft (new) |
+|-|----------------|-------------|
+| External dependency | Yes -- must run Zookeeper separately | **No** -- Kafka is self-contained |
+| Partition limit | ~200,000 | **Millions** |
+| Broker crash recovery | Minutes (Zookeeper election) | **Milliseconds** |
+| Configuration complexity | Two systems to configure | **One system** |
+| Removed in Kafka | Still supported in 3.x | **Zookeeper fully removed in Kafka 4.0** |
+
+#### How KRaft is Configured in docker-compose.yml
+
+Here is what each KRaft setting in our `docker-compose.yml` does:
+
+```yaml
+environment:
+  # This node is BOTH a broker (stores messages) AND a controller (manages metadata)
+  KAFKA_PROCESS_ROLES: broker,controller
+
+  # This node's unique ID in the cluster
+  KAFKA_NODE_ID: 1
+
+  # Who are the controller voters? (In our case, just node 1 -- single node cluster)
+  # Format: nodeId@host:port
+  KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+
+  # The controller listens on a separate internal port (29093)
+  # This is NOT exposed to your app -- it is internal Kafka-to-Kafka communication
+  KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+
+  # A unique ID for this Kafka cluster (generated once, never changes)
+  CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+
+  # Where KRaft stores its metadata logs
+  KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+```
+
+**The key line is `KAFKA_PROCESS_ROLES: broker,controller`.** In a production cluster with 6 nodes, you might have:
+- 3 nodes as `controller` only (manage metadata)
+- 3 nodes as `broker` only (store messages)
+
+In our local dev setup, one node does both.
+
+#### What About the Listeners? (Why So Many Ports?)
+
+```yaml
+KAFKA_LISTENERS: PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,PLAINTEXT_HOST://0.0.0.0:9092
+```
+
+The Kafka container has **3 internal listeners**, but only **1 is exposed to you**:
+
+| Listener | Port | Who uses it | Exposed to you? |
+|----------|------|------------|-----------------|
+| `PLAINTEXT` | 29092 | Other containers inside Docker (e.g., Schema Registry talks to Kafka on this port) | No |
+| `CONTROLLER` | 29093 | KRaft internal controller communication (metadata replication) | No |
+| `PLAINTEXT_HOST` | 9092 | **Your Java app** on the host machine | **Yes** -- this is `localhost:9092` |
+
+```
+Your Java app (host machine)
+       |
+       | connects to localhost:9092  (PLAINTEXT_HOST)
+       v
+  +--------------------+
+  | Kafka Container    |
+  |                    |
+  |  9092 ← your app  |
+  | 29092 ← schema-registry (internal Docker network)
+  | 29093 ← KRaft controller (internal)
+  +--------------------+
+```
+
+This is why `application.yaml` says `localhost:9092` but the Schema Registry config inside `docker-compose.yml` says `kafka:29092` -- they are accessing the same broker through different network paths.
+
+#### Do I Need to Know KRaft to Write Code?
+
+**No.** KRaft is infrastructure-level. Your Java code (`KafkaAvroProducerConfig.java`, `KafkaAvroMessagePublisher.java`) does not know or care whether the broker uses KRaft or Zookeeper. It just connects to `localhost:9092`.
+
+But you should know KRaft exists because:
+- Every Kafka interview will ask about it
+- If you see old tutorials with Zookeeper, you know they are outdated
+- When setting up Kafka in production, you choose KRaft mode
+
+---
+
 ### Understanding the 3 Ports (Why Are They All Different?)
 
 When you look at `application.yaml`, you see 3 different ports:
